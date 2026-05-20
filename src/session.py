@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from dhanhq import dhanhq
+from dhanhq import dhanhq, DhanContext
 
 # TODO (multi-broker): replace this module with a broker_factory.py that reads
 # BROKER=zerodha|dhan|both from .env and returns a BaseBroker-compatible instance.
@@ -15,4 +15,5 @@ def load_session():
     Regenerate the token from https://api.dhan.co when it expires.
     """
     load_dotenv(ENV_FILE)
-    return dhanhq(os.environ['DHAN_CLIENT_ID'], os.environ['DHAN_ACCESS_TOKEN'])
+    ctx = DhanContext(os.environ['DHAN_CLIENT_ID'], os.environ['DHAN_ACCESS_TOKEN'])
+    return dhanhq(ctx)

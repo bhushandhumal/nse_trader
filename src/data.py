@@ -1,4 +1,5 @@
 import io
+import logging
 import datetime as dt
 import pandas as pd
 import requests
@@ -47,7 +48,7 @@ def _response_to_df(result):
         'low':    data['low'],
         'close':  data['close'],
         'volume': data['volume'],
-    }, index=pd.to_datetime(data['timestamp']))
+    }, index=pd.to_datetime(data['timestamp'], unit='s'))
     df.index.name = 'date'
     return df
 
@@ -134,7 +135,9 @@ def fetch_ltp(dhan, instrument_df, ticker):
         return None
     try:
         result = dhan.ohlc_data(securities={'NSE_EQ': [int(security_id)]})
+        if result.get('status') != 'success':
+            return None
         return result['data']['NSE_EQ'][security_id]['last_price']
     except Exception as e:
-        print(f"Error fetching LTP for {ticker}: {e}")
+        logging.error(f"Error fetching LTP for {ticker}: {e}")
         return None

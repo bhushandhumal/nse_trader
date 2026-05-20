@@ -7,7 +7,7 @@ from src.orders import place_sl_order, modify_sl_order
 _PENDING_STATUSES = {'PENDING', 'TRANSIT'}
 
 
-def run(dhan, instrument_df, tickers, capital, st_dir):
+def run(dhan, instrument_df, tickers, capital, st_dir, dry_run=False):
     """One pass of the three-supertrend strategy across all tickers.
 
     st_dir: dict mapping ticker -> ['None'|'green'|'red', ...] x3, mutated in place.
@@ -54,12 +54,12 @@ def run(dhan, instrument_df, tickers, capital, st_dir):
                 ]
                 if not pending.empty:
                     row = pending.iloc[0]
-                    modify_sl_order(dhan, row['orderId'], int(row['quantity']), current_sl)
+                    modify_sl_order(dhan, row['orderId'], int(row['quantity']), current_sl, dry_run=dry_run)
             elif not has_position:
                 if all_green:
-                    place_sl_order(dhan, security_id, 'buy',  quantity, current_sl)
+                    place_sl_order(dhan, security_id, 'buy',  quantity, current_sl, dry_run=dry_run)
                 elif all_red:
-                    place_sl_order(dhan, security_id, 'sell', quantity, current_sl)
+                    place_sl_order(dhan, security_id, 'sell', quantity, current_sl, dry_run=dry_run)
 
         except Exception as e:
             print(f"  Error for {ticker}: {e}")
