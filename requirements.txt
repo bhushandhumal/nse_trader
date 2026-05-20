@@ -1,7 +1,5 @@
-kiteconnect
-selenium
-pyotp
+dhanhq
+requests
 pandas
 numpy
 python-dotenv
-niftystocks

@@ -5,11 +5,11 @@ FAST_MA = 5
 SLOW_MA = 15
 
 
-def run(kite, instrument_df, tickers, interval='day', duration=60):
+def run(dhan, instrument_df, tickers, interval='day', duration=60):
     """Scans tickers for SMA crossover signals and prints buy/sell alerts."""
     for ticker in tickers:
         try:
-            ohlc = fetch_ohlc(kite, instrument_df, ticker, interval, duration)
+            ohlc = fetch_ohlc(dhan, instrument_df, ticker, interval, duration)
             signal = sma_crossover_signal(ohlc, fast=FAST_MA, slow=SLOW_MA)
             if signal == 1:
                 print(f"BUY  {ticker} — fast MA crossed above slow MA")

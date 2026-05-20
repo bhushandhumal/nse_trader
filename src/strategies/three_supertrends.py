@@ -1,57 +1,65 @@
 import pandas as pd
-from src.data import fetch_ohlc
+from src.data import fetch_ohlc, instrument_lookup
 from src.indicators import supertrend, sl_price, update_st_direction
 from src.orders import place_sl_order, modify_sl_order
 
+# Dhan order statuses for an SL order waiting to be triggered
+_PENDING_STATUSES = {'PENDING', 'TRANSIT'}
 
-def run(kite, instrument_df, tickers, capital, st_dir):
+
+def run(dhan, instrument_df, tickers, capital, st_dir):
     """One pass of the three-supertrend strategy across all tickers.
 
     st_dir: dict mapping ticker -> ['None'|'green'|'red', ...] x3, mutated in place.
     """
     try:
-        pos_df = pd.DataFrame(kite.positions()['day'])
+        positions = dhan.get_positions().get('data', [])
     except Exception:
         print("Failed to fetch positions, skipping cycle.")
         return
 
     try:
-        ord_df = pd.DataFrame(kite.orders())
+        orders = dhan.get_order_list().get('data', [])
     except Exception:
         print("Failed to fetch orders, skipping cycle.")
         return
 
+    pos_map = {p['tradingSymbol']: p['netQty'] for p in positions}
+    ord_df  = pd.DataFrame(orders) if orders else pd.DataFrame()
+
     for ticker in tickers:
         print(f"Processing {ticker}...")
         try:
-            ohlc = fetch_ohlc(kite, instrument_df, ticker, '5minute', 4)
+            security_id = instrument_lookup(instrument_df, ticker)
+            if security_id is None:
+                print(f"  Skipping {ticker}: security_id not found.")
+                continue
+
+            ohlc = fetch_ohlc(dhan, instrument_df, ticker, '5minute', 4)
             ohlc['st1'] = supertrend(ohlc, 7, 3)
             ohlc['st2'] = supertrend(ohlc, 10, 3)
             ohlc['st3'] = supertrend(ohlc, 11, 2)
             update_st_direction(st_dir, ohlc, ticker)
 
-            quantity = min(int(capital / ohlc['close'].iloc[-1]), 1000)
-            all_green = st_dir[ticker] == ['green', 'green', 'green']
-            all_red = st_dir[ticker] == ['red', 'red', 'red']
-            current_sl = sl_price(ohlc)
+            quantity    = min(int(capital / ohlc['close'].iloc[-1]), 1000)
+            all_green   = st_dir[ticker] == ['green', 'green', 'green']
+            all_red     = st_dir[ticker] == ['red',   'red',   'red'  ]
+            current_sl  = sl_price(ohlc)
+            has_position = pos_map.get(ticker, 0) != 0
 
-            has_position = (
-                len(pos_df.columns) != 0 and
-                ticker in pos_df['tradingsymbol'].tolist() and
-                pos_df[pos_df['tradingsymbol'] == ticker]['quantity'].values[0] != 0
-            )
-
-            if has_position:
-                order_id = ord_df.loc[
-                    (ord_df['tradingsymbol'] == ticker) &
-                    (ord_df['status'].isin(['TRIGGER PENDING', 'OPEN']))
-                ]['order_id'].values[0]
-                modify_sl_order(kite, order_id, current_sl)
-            else:
+            if has_position and not ord_df.empty:
+                pending = ord_df[
+                    (ord_df['tradingSymbol'] == ticker) &
+                    (ord_df['orderStatus'].isin(_PENDING_STATUSES))
+                ]
+                if not pending.empty:
+                    row = pending.iloc[0]
+                    modify_sl_order(dhan, row['orderId'], int(row['quantity']), current_sl)
+            elif not has_position:
                 if all_green:
-                    place_sl_order(kite, ticker, 'buy', quantity, current_sl)
+                    place_sl_order(dhan, security_id, 'buy',  quantity, current_sl)
                 elif all_red:
-                    place_sl_order(kite, ticker, 'sell', quantity, current_sl)
+                    place_sl_order(dhan, security_id, 'sell', quantity, current_sl)
 
         except Exception as e:
-            print(f"Error for {ticker}: {e}")
+            print(f"  Error for {ticker}: {e}")

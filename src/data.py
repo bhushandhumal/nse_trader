@@ -1,65 +1,140 @@
+import io
 import datetime as dt
 import pandas as pd
+import requests
+
+# TODO (multi-broker): this module is Dhan-specific. Future refactor: move behind
+# a BaseBroker.get_instruments() / BaseBroker.fetch_ohlc() interface.
+
+SCRIP_MASTER_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+# Maps interval strings to Dhan's minute values (1, 5, 15, 25, 60)
+_INTERVAL_MAP = {
+    '1minute': 1,
+    '5minute': 5,
+    '15minute': 15,
+    '25minute': 25,
+    '60minute': 60,
+}
 
 
-def get_instruments(kite):
-    """Fetches full NSE instrument dump. Call once per session and pass the result around."""
-    return pd.DataFrame(kite.instruments("NSE"))
+def get_instruments():
+    """Downloads Dhan scrip master CSV. Call once per session and pass the result around."""
+    resp = requests.get(SCRIP_MASTER_URL, timeout=30)
+    resp.raise_for_status()
+    return pd.read_csv(io.StringIO(resp.text), low_memory=False)
 
 
 def instrument_lookup(instrument_df, symbol):
-    """Returns instrument token for a symbol, or -1 if not found."""
+    """Returns Dhan security_id (str) for an NSE equity symbol, or None if not found."""
     try:
-        return instrument_df[instrument_df.tradingsymbol == symbol].instrument_token.values[0]
+        mask = (
+            (instrument_df['SEM_TRADING_SYMBOL'] == symbol) &
+            (instrument_df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (instrument_df['SEM_INSTRUMENT_NAME'] == 'EQUITY')
+        )
+        return str(instrument_df[mask]['SEM_SMST_SECURITY_ID'].values[0])
     except IndexError:
-        return -1
+        return None
 
 
-def fetch_ohlc(kite, instrument_df, ticker, interval, duration):
-    """Returns OHLC DataFrame for the last `duration` calendar days."""
-    token = instrument_lookup(instrument_df, ticker)
-    data = pd.DataFrame(
-        kite.historical_data(token, dt.date.today() - dt.timedelta(duration), dt.date.today(), interval)
-    )
-    data.set_index("date", inplace=True)
-    return data
+def _response_to_df(result):
+    """Normalises a Dhan historical/intraday response to a date-indexed OHLCV DataFrame."""
+    data = result.get('data', result)
+    df = pd.DataFrame({
+        'open':   data['open'],
+        'high':   data['high'],
+        'low':    data['low'],
+        'close':  data['close'],
+        'volume': data['volume'],
+    }, index=pd.to_datetime(data['timestamp']))
+    df.index.name = 'date'
+    return df
 
 
-def fetch_ohlc_extended(kite, instrument_df, ticker, inception_date, interval):
-    """Returns OHLC DataFrame from inception_date to today, chunked to respect API limits.
+def fetch_ohlc(dhan, instrument_df, ticker, interval, duration):
+    """Returns OHLC DataFrame for the last `duration` calendar days.
+
+    interval: 'day' | '1minute' | '5minute' | '15minute' | '25minute' | '60minute'
+    """
+    security_id = instrument_lookup(instrument_df, ticker)
+    if security_id is None:
+        raise ValueError(f"Instrument not found: {ticker}")
+
+    to_dt   = dt.date.today()
+    from_dt = to_dt - dt.timedelta(duration)
+
+    if interval == 'day':
+        result = dhan.historical_daily_data(
+            security_id=security_id,
+            exchange_segment='NSE_EQ',
+            instrument_type='EQUITY',
+            from_date=from_dt.strftime('%Y-%m-%d'),
+            to_date=to_dt.strftime('%Y-%m-%d'),
+        )
+    else:
+        if interval not in _INTERVAL_MAP:
+            raise ValueError(f"Invalid interval '{interval}'. Choose from: day, {', '.join(_INTERVAL_MAP)}")
+        result = dhan.intraday_minute_data(
+            security_id=security_id,
+            exchange_segment='NSE_EQ',
+            instrument_type='EQUITY',
+            interval=_INTERVAL_MAP[interval],
+            from_date=from_dt.strftime('%Y-%m-%d') + ' 09:15:00',
+            to_date=to_dt.strftime('%Y-%m-%d') + ' 15:30:00',
+        )
+
+    return _response_to_df(result)
+
+
+def fetch_ohlc_extended(dhan, instrument_df, ticker, inception_date, interval):
+    """Returns OHLC DataFrame from inception_date to today, chunked within Dhan's 90-day limit.
 
     inception_date format: 'dd-mm-yyyy'
+    interval: 'day' | '1minute' | '5minute' | '15minute' | '25minute' | '60minute'
     """
-    interval_limits = {
-        'minute': 60, '3minute': 100, '5minute': 100, '10minute': 100,
-        '15minute': 200, '30minute': 200, '60minute': 400, 'day': 2000,
-    }
-    if interval not in interval_limits:
-        raise ValueError(f"Invalid interval: {interval}. Choose from {list(interval_limits)}")
+    security_id = instrument_lookup(instrument_df, ticker)
+    if security_id is None:
+        raise ValueError(f"Instrument not found: {ticker}")
 
-    delta = interval_limits[interval]
-    token = instrument_lookup(instrument_df, ticker)
-    from_date = dt.datetime.strptime(inception_date + " 16:30:00", '%d-%m-%Y %H:%M:%S')
+    from_dt = dt.datetime.strptime(inception_date, '%d-%m-%Y').date()
+    to_dt   = dt.date.today()
+    chunk_days = 90 if interval != 'day' else 365
     chunks = []
 
-    while True:
-        if from_date.date() >= (dt.date.today() - dt.timedelta(delta)):
-            chunks.append(pd.DataFrame(kite.historical_data(token, from_date, dt.date.today(), interval)))
-            break
-        to_date = from_date + dt.timedelta(delta)
-        chunks.append(pd.DataFrame(kite.historical_data(token, from_date, to_date, interval)))
-        from_date = to_date
+    while from_dt < to_dt:
+        chunk_end = min(from_dt + dt.timedelta(chunk_days), to_dt)
+        if interval == 'day':
+            result = dhan.historical_daily_data(
+                security_id=security_id,
+                exchange_segment='NSE_EQ',
+                instrument_type='EQUITY',
+                from_date=from_dt.strftime('%Y-%m-%d'),
+                to_date=chunk_end.strftime('%Y-%m-%d'),
+            )
+        else:
+            result = dhan.intraday_minute_data(
+                security_id=security_id,
+                exchange_segment='NSE_EQ',
+                instrument_type='EQUITY',
+                interval=_INTERVAL_MAP[interval],
+                from_date=from_dt.strftime('%Y-%m-%d') + ' 09:15:00',
+                to_date=chunk_end.strftime('%Y-%m-%d') + ' 15:30:00',
+            )
+        chunks.append(_response_to_df(result))
+        from_dt = chunk_end + dt.timedelta(1)
 
-    data = pd.concat(chunks, ignore_index=True)
-    data.set_index("date", inplace=True)
-    return data
+    return pd.concat(chunks)
 
 
-def fetch_ltp(kite, ticker, exchange='NSE'):
-    """Returns last traded price for a ticker."""
+def fetch_ltp(dhan, instrument_df, ticker):
+    """Returns last traded price for an NSE equity ticker."""
+    security_id = instrument_lookup(instrument_df, ticker)
+    if security_id is None:
+        return None
     try:
-        key = f"{exchange}:{ticker}"
-        return kite.ltp([key])[key]['last_price']
+        result = dhan.ohlc_data(securities={'NSE_EQ': [int(security_id)]})
+        return result['data']['NSE_EQ'][security_id]['last_price']
     except Exception as e:
         print(f"Error fetching LTP for {ticker}: {e}")
         return None

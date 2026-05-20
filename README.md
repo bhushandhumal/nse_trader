@@ -1,10 +1,10 @@
 # nse_trader
 
-An intraday trading bot for NSE (India) built on [Zerodha KiteConnect](https://kite.trade/docs/connect/v3/).
+An intraday trading bot for NSE (India) built on the [Dhan API](https://dhanhq.co/docs/v2/).
 
 ## Features
 
-- **Auto-login** — headless Selenium + TOTP, stores access token in `.env`
+- **Simple auth** — Dhan access tokens are long-lived (~30 days), no daily Selenium login needed
 - **Three Supertrends strategy** — ATR-based trend confirmation across three parameter sets
 - **SMA Crossover strategy** — fast/slow moving average crossover signals
 - **Candlestick pattern scanner** — doji, hammer, shooting star, marubozu, harami cross, engulfing
@@ -19,7 +19,7 @@ nse_trader/
 ├── requirements.txt
 ├── main.py                   # entry point
 └── src/
-    ├── session.py            # auto_login, load_session
+    ├── session.py            # load_session (DhanHQ client)
     ├── data.py               # fetch_ohlc, fetch_ltp, instrument_lookup
     ├── indicators.py         # atr, supertrend, sma_crossover_signal, sl_price
     ├── candlesticks.py       # pattern detection + pivot levels
@@ -45,23 +45,21 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` with your Zerodha credentials:
+Edit `.env` with your Dhan credentials:
 
 ```
-APP_KEY=your_zerodha_api_key
-SECRET_KEY=your_zerodha_api_secret
-USERNAME=your_zerodha_user_id
-PASSWORD=your_zerodha_password
-TOTP=your_totp_secret_base32
+DHAN_CLIENT_ID=your_dhan_client_id
+DHAN_ACCESS_TOKEN=your_dhan_access_token
 ```
 
 > **Note:** `.env` is gitignored and will never be committed.
 
-### 3. KiteConnect app setup
+### 3. Get Dhan API credentials
 
-1. Create an app at [kite.trade/developers](https://developers.kite.trade/)
-2. Set the redirect URL to `http://127.0.0.1`
-3. Copy the API key and secret into `.env`
+1. Log in to [api.dhan.co](https://api.dhan.co)
+2. Create a new app and generate an access token
+3. Copy the **Client ID** and **Access Token** into `.env`
+4. Tokens are valid for ~30 days — regenerate from the same page when expired
 
 ### 4. Run
 
@@ -69,7 +67,7 @@ TOTP=your_totp_secret_base32
 python main.py
 ```
 
-On startup it will auto-login via Selenium (headless Chrome), fetch instruments once, then run the three-supertrend strategy every 5 minutes during market hours.
+On startup it downloads the Dhan scrip master (instrument list), then runs the three-supertrend strategy every 5 minutes during market hours.
 
 ## Configuration
 
@@ -86,12 +84,12 @@ INTERVAL_SECONDS = 300    # scan every 5 minutes
 
 ### Three Supertrends (`src/strategies/three_supertrends.py`)
 
-Places an intraday MIS entry + stop-loss order when all three supertrend indicators align (all green = buy, all red = sell). Modifies the SL order on each subsequent tick.
+Places an intraday INTRADAY entry + stop-loss order when all three supertrend indicators align (all green = buy, all red = sell). Modifies the SL order on each subsequent tick.
 
-| Parameter | ST1 | ST2 | ST3 |
-|-----------|-----|-----|-----|
-| ATR period | 7 | 10 | 11 |
-| Multiplier | 3 | 3 | 2 |
+| Parameter  | ST1 | ST2 | ST3 |
+|------------|-----|-----|-----|
+| ATR period | 7   | 10  | 11  |
+| Multiplier | 3   | 3   | 2   |
 
 ### SMA Crossover (`src/strategies/sma_crossover.py`)
 
@@ -100,8 +98,7 @@ Prints buy/sell alerts when the 5-period MA crosses the 15-period MA. No order p
 ## Requirements
 
 - Python 3.8+
-- Google Chrome + ChromeDriver (matching versions)
-- Zerodha account with KiteConnect API subscription
+- Dhan trading account with API access enabled
 
 ## Disclaimer
 
