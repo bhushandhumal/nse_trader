@@ -1,0 +1,7 @@
+kiteconnect
+selenium
+pyotp
+pandas
+numpy
+python-dotenv
+niftystocks
