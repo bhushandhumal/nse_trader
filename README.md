@@ -4,29 +4,34 @@ An intraday trading bot for NSE (India) built on the [Dhan API](https://dhanhq.c
 
 ## Features
 
-- **Simple auth** — Dhan access tokens are long-lived (~30 days), no daily Selenium login needed
+- **TOTP-based auth** — auto-generates a fresh Dhan access token on startup using PIN + TOTP; no manual token rotation needed
 - **Three Supertrends strategy** — ATR-based trend confirmation across three parameter sets
+- **Pre-market screener** — scans Nifty 200 each morning, ranks by ADX and ATR%, outputs a ready-to-paste `TICKERS=` line
 - **SMA Crossover strategy** — fast/slow moving average crossover signals
-- **Candlestick pattern scanner** — doji, hammer, shooting star, marubozu, harami cross, engulfing
-- **Pivot point support/resistance** — floor pivot levels for significance detection
+- **Candlestick pattern scanner** — doji, hammer, shooting star, marubozu
+- **Pivot point support/resistance** — floor pivot levels
 - **Market hours guard** — runs only during NSE session (Mon–Fri, 9:15–15:30)
+- **Square-off** — closes all positions at 3:15 PM before Dhan's auto square-off
 
 ## Project Structure
 
 ```
 nse_trader/
-├── .env.example              # credential template — copy to .env and fill in
+├── .env.example                          # credential template — copy to .env and fill in
+├── .env                                  # your credentials (gitignored)
 ├── requirements.txt
-├── main.py                   # entry point
+├── main.py                               # entry point
+├── check_connection.py                   # verify Dhan session and API access
 └── src/
-    ├── session.py            # load_session (DhanHQ client)
-    ├── data.py               # fetch_ohlc, fetch_ltp, instrument_lookup
-    ├── indicators.py         # atr, supertrend, sma_crossover_signal, sl_price
-    ├── candlesticks.py       # pattern detection + pivot levels
-    ├── orders.py             # place_sl_order, modify_sl_order
+    ├── session.py                        # TOTP login, token caching
+    ├── data.py                           # fetch_ohlc, fetch_ltp, instrument_lookup
+    ├── indicators.py                     # atr, supertrend, sl_price
+    ├── candlesticks.py                   # pattern detection + pivot levels
+    ├── orders.py                         # place_sl_order, modify_sl_order, square_off_all
     └── strategies/
-        ├── sma_crossover.py
-        └── three_supertrends.py
+        ├── three_supertrends.py          # main intraday strategy
+        ├── three_supertrends_screener.py # pre-market Nifty 200 screener
+        └── sma_crossover.py
 ```
 
 ## Setup
@@ -45,55 +50,81 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` with your Dhan credentials:
+Edit `.env`:
 
 ```
 DHAN_CLIENT_ID=your_dhan_client_id
-DHAN_ACCESS_TOKEN=your_dhan_access_token
+DHAN_TOTP_SECRET=BASE32SECRETHERE
+DHAN_PIN=your_dhan_pin
+
+CAPITAL=1000000
+TICKERS=RELIANCE,INFY,...
 ```
 
-> **Note:** `.env` is gitignored and will never be committed.
+**Getting your TOTP secret:**
+1. Open the Dhan app → Profile → Security → 2FA
+2. Re-enable 2FA — it shows a QR code
+3. Scan with an authenticator app that exposes the secret (e.g. [Aegis](https://getaegis.app/) on Android)
+4. The secret is the `secret=` parameter in the `otpauth://` URL (a base32 string)
 
-### 3. Get Dhan API credentials
+> `.env` and `.token_cache` are gitignored and will never be committed.
 
-1. Log in to [api.dhan.co](https://api.dhan.co)
-2. Create a new app and generate an access token
-3. Copy the **Client ID** and **Access Token** into `.env`
-4. Tokens are valid for ~30 days — regenerate from the same page when expired
-
-### 4. Run
+### 3. Verify connection
 
 ```bash
-python main.py
+python check_connection.py
 ```
 
-On startup it downloads the Dhan scrip master (instrument list), then runs the three-supertrend strategy every 5 minutes during market hours.
+## Daily Workflow
+
+### Morning (before 9:15 AM) — run the screener
+
+```bash
+python -m src.strategies.three_supertrends_screener
+```
+
+Scans all Nifty 200 stocks, filters by ADX ≥ 25 and ATR% ≥ 1.0, and prints:
+
+```
+TICKERS=HDFCBANK,RELIANCE,INFY,...
+```
+
+Paste that line into `.env`, then start the bot.
+
+### 9:15 AM — start the bot
+
+```bash
+python main.py --dry-run   # paper trading
+python main.py             # live trading
+```
+
+The bot runs every 5 minutes, places SL orders on supertrend signals, and squares off all positions at 3:15 PM.
 
 ## Configuration
 
-Edit the top of `main.py` to change tickers, capital per trade, or run duration:
+All config lives in `.env`:
 
-```python
-TICKERS = ["GODREJCP", "DABUR", "ICICIPRULI", "NAUKRI", "HAVELLS", "INDHOTEL"]
-CAPITAL = 3000            # max capital per position (INR)
-RUN_DURATION_HOURS = 6
-INTERVAL_SECONDS = 300    # scan every 5 minutes
+```
+CAPITAL=1000000        # max capital per position (INR)
+TICKERS=RELIANCE,INFY  # comma-separated list (use screener output)
 ```
 
-## Strategies
+## Strategy — Three Supertrends
 
-### Three Supertrends (`src/strategies/three_supertrends.py`)
-
-Places an intraday INTRADAY entry + stop-loss order when all three supertrend indicators align (all green = buy, all red = sell). Modifies the SL order on each subsequent tick.
+Places an intraday entry + stop-loss order when all three supertrend indicators align (all green = buy, all red = sell). Re-entry is blocked until the signal transitions through `hold`, preventing duplicate orders.
 
 | Parameter  | ST1 | ST2 | ST3 |
 |------------|-----|-----|-----|
 | ATR period | 7   | 10  | 11  |
 | Multiplier | 3   | 3   | 2   |
 
-### SMA Crossover (`src/strategies/sma_crossover.py`)
+## Tests
 
-Prints buy/sell alerts when the 5-period MA crosses the 15-period MA. No order placement — use as a screener.
+```bash
+pytest tests/ -v --cov=src
+```
+
+87 tests covering indicators, orders, signal logic, data utilities, and candlestick patterns.
 
 ## Requirements
 
@@ -102,4 +133,4 @@ Prints buy/sell alerts when the 5-period MA crosses the 15-period MA. No order p
 
 ## Disclaimer
 
-This software is for educational purposes only. Algorithmic trading carries significant financial risk. Always test thoroughly in paper trading mode before using real capital.
+This software is for educational purposes only. Algorithmic trading carries significant financial risk. Always test thoroughly with `--dry-run` before using real capital.
