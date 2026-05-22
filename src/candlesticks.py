@@ -10,10 +10,8 @@ def _doji_row(candle):
     total_range = candle['high'] - candle['low']
     if total_range == 0:
         return False
-    tolerance = 0.05 * total_range
-    upper_shadow = candle['high'] - max(candle['open'], candle['close'])
-    lower_shadow = min(candle['open'], candle['close']) - candle['low']
-    return upper_shadow <= tolerance and lower_shadow <= tolerance
+    body = abs(candle['close'] - candle['open'])
+    return body / total_range <= 0.05
 
 
 def _marubozu_row(candle):

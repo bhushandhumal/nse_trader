@@ -6,7 +6,7 @@ import datetime as dt
 from dotenv import load_dotenv
 
 from src.session import load_session
-from src.data import get_instruments
+from src.data import get_instruments, fetch_ohlc, save_ohlc
 from src.strategies import three_supertrends
 from src.orders import square_off_all
 
@@ -15,21 +15,13 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('trader.log'),
+        logging.FileHandler(f'trader_{dt.date.today()}.log'),
     ]
 )
 
-# --- environment selection ---
-_VALID_ENVS = ('dev', 'uat', 'prod')
-_env_arg = next((a.split('=')[1] for a in sys.argv if a.startswith('--env=')), None)
-if _env_arg not in _VALID_ENVS:
-    print(f"Usage: python main.py --env=dev|uat|prod [--dry-run]")
-    sys.exit(1)
-
-ENV     = _env_arg
 DRY_RUN = '--dry-run' in sys.argv
 
-load_dotenv(f'.env.{ENV}', override=True)
+load_dotenv('.env', override=True)
 
 # --- config (env file can override these defaults) ---
 CAPITAL          = int(os.getenv('CAPITAL', 3000))
@@ -72,12 +64,24 @@ def _next_close():
 
 if __name__ == "__main__":
     dhan = load_session()
-    logging.info(f"Session loaded. env={ENV} dry_run={DRY_RUN} tickers={TICKERS} capital={CAPITAL}")
+    logging.info(f"Session loaded. dry_run={DRY_RUN} tickers={TICKERS} capital={CAPITAL}")
 
     instrument_df = get_instruments()
     logging.info(f"Instruments loaded: {len(instrument_df)} records.")
 
+    logging.info("Pre-loading OHLC cache for all tickers...")
+    for ticker in TICKERS:
+        try:
+            df = fetch_ohlc(dhan, instrument_df, ticker, '5minute', 4)
+            save_ohlc(ticker, '5minute', df)
+            logging.info(f"  Cached {ticker}: {len(df)} candles")
+        except Exception as e:
+            logging.warning(f"  Failed to cache {ticker}: {e}")
+        time.sleep(1)
+    logging.info("Pre-load complete.")
+
     st_dir      = {ticker: ['None', 'None', 'None'] for ticker in TICKERS}
+    prev_signals = {ticker: 'hold' for ticker in TICKERS}
     starttime   = time.time()
     timeout     = _next_close()
     squared_off = False
@@ -103,7 +107,7 @@ if __name__ == "__main__":
                 continue
 
             try:
-                three_supertrends.run(dhan, instrument_df, TICKERS, CAPITAL, st_dir, dry_run=DRY_RUN)
+                three_supertrends.run(dhan, instrument_df, TICKERS, CAPITAL, st_dir, prev_signals, dry_run=DRY_RUN)
             except KeyboardInterrupt:
                 raise
             except Exception as e:

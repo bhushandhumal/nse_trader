@@ -14,7 +14,7 @@ def atr(df, n):
 
 def supertrend(df, n, m):
     """Supertrend indicator. n = ATR period (typically 7), m = multiplier (2 or 3)."""
-    d = df.copy()
+    d = df.copy().reset_index(drop=True)
     d['ATR'] = atr(d, n)
     d['B-U'] = ((d['high'] + d['low']) / 2) + m * d['ATR']
     d['B-L'] = ((d['high'] + d['low']) / 2) - m * d['ATR']
@@ -47,7 +47,9 @@ def supertrend(df, n, m):
         elif prev == d['L-B'][i - 1]:
             d.loc[idx[i], 'Strend'] = d['L-B'][i] if d['close'][i] >= d['L-B'][i] else d['U-B'][i]
 
-    return d['Strend']
+    result = d['Strend']
+    result.index = df.index
+    return result
 
 
 def sl_price(ohlc):

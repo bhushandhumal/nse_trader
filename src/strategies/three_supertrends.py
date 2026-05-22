@@ -1,6 +1,8 @@
+import time
 import logging
+import traceback
 import pandas as pd
-from src.data import fetch_ohlc, instrument_lookup
+from src.data import fetch_ohlc_incremental, instrument_lookup
 from src.indicators import supertrend, sl_price, update_st_direction
 from src.orders import place_sl_order, modify_sl_order
 
@@ -33,10 +35,13 @@ def signal(ohlc, st_dir, ticker):
         return {'action': 'hold', 'sl': current_sl}
 
 
-def run(dhan, instrument_df, tickers, capital, st_dir, dry_run=False):
+def run(dhan, instrument_df, tickers, capital, st_dir, prev_signals, dry_run=False):
     """One pass of the three-supertrend strategy across all tickers.
 
-    st_dir: dict mapping ticker -> ['None'|'green'|'red', ...] x3, mutated in place.
+    st_dir:       dict ticker -> ['None'|'green'|'red', ...] x3, mutated in place.
+    prev_signals: dict ticker -> last action taken ('hold'|'buy'|'sell'), mutated in place.
+                  Entry only fires when action transitions away from the previous value,
+                  preventing duplicate orders across cycles.
     """
     try:
         positions = dhan.get_positions().get('data', [])
@@ -59,9 +64,10 @@ def run(dhan, instrument_df, tickers, capital, st_dir, dry_run=False):
             security_id = instrument_lookup(instrument_df, ticker)
             if security_id is None:
                 logging.warning(f"Skipping {ticker}: security_id not found.")
+                time.sleep(1)
                 continue
 
-            ohlc = fetch_ohlc(dhan, instrument_df, ticker, '5minute', 4)
+            ohlc = fetch_ohlc_incremental(dhan, instrument_df, ticker, '5minute', 4)
             ohlc['st1'] = supertrend(ohlc, 7, 3)
             ohlc['st2'] = supertrend(ohlc, 10, 3)
             ohlc['st3'] = supertrend(ohlc, 11, 2)
@@ -70,13 +76,17 @@ def run(dhan, instrument_df, tickers, capital, st_dir, dry_run=False):
             quantity = min(int(capital / ohlc['close'].iloc[-1]), 1000)
             if quantity < 1:
                 logging.warning(f"Skipping {ticker}: quantity=0 (capital ₹{capital} < price ₹{ohlc['close'].iloc[-1]:.1f})")
+                time.sleep(1)
                 continue
 
             sig = signal(ohlc, st_dir, ticker)
             if sig['sl'] is None:
                 logging.warning(f"Skipping {ticker}: supertrend not yet initialised (NaN in last candle).")
+                time.sleep(1)
                 continue
 
+            prev = prev_signals.get(ticker, 'hold')
+            logging.info(f"{ticker}: signal={sig['action']} prev={prev} sl={sig['sl']} close={ohlc['close'].iloc[-1]:.1f}")
             has_position = pos_map.get(ticker, 0) != 0
 
             if has_position and not ord_df.empty:
@@ -87,11 +97,14 @@ def run(dhan, instrument_df, tickers, capital, st_dir, dry_run=False):
                 if not pending.empty:
                     row = pending.iloc[0]
                     modify_sl_order(dhan, row['orderId'], int(row['quantity']), sig['sl'], dry_run=dry_run)
-            elif not has_position:
-                if sig['action'] == 'buy':
-                    place_sl_order(dhan, security_id, 'buy',  quantity, sig['sl'], dry_run=dry_run)
-                elif sig['action'] == 'sell':
-                    place_sl_order(dhan, security_id, 'sell', quantity, sig['sl'], dry_run=dry_run)
+            elif not has_position and sig['action'] != 'hold' and sig['action'] != prev:
+                # Only enter on a fresh transition — avoids re-entry every cycle while
+                # signal stays in the same direction, and prevents re-entry after SL hit
+                # until the signal has cycled back through hold.
+                place_sl_order(dhan, security_id, sig['action'], quantity, sig['sl'], dry_run=dry_run)
+
+            prev_signals[ticker] = sig['action']
 
         except Exception as e:
-            logging.error(f"Error for {ticker}: {e}")
+            logging.error(f"Error for {ticker}: {e}\n{traceback.format_exc()}")
+        time.sleep(1)

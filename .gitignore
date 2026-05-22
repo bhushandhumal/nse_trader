@@ -1,7 +1,5 @@
 .env
-.env.dev
-.env.uat
-.env.prod
+.token_cache
 __pycache__/
 *.pyc
 *.pyo
@@ -15,3 +13,4 @@ build/
 venv/
 NSE_Instruments.csv
 start_claude.bat
+update_claude.bat

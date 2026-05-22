@@ -44,14 +44,19 @@ def instrument_lookup(instrument_df, symbol):
 
 def _response_to_df(result):
     """Normalises a Dhan historical/intraday response to a date-indexed OHLCV DataFrame."""
+    if result.get('status') == 'failure':
+        raise ValueError(f"Dhan API error: {result.get('remarks', result)}")
     data = result.get('data', result)
+    if not isinstance(data, dict):
+        raise ValueError(f"Unexpected response format: {result}")
+    ts_key = 'start_Time' if 'start_Time' in data else 'timestamp'
     df = pd.DataFrame({
         'open':   data['open'],
         'high':   data['high'],
         'low':    data['low'],
         'close':  data['close'],
         'volume': data['volume'],
-    }, index=pd.to_datetime(data['timestamp'], unit='s'))
+    }, index=pd.to_datetime(data[ts_key], unit='s'))
     df.index.name = 'date'
     return df
 
@@ -89,6 +94,52 @@ def fetch_ohlc(dhan, instrument_df, ticker, interval, duration):
         )
 
     return _response_to_df(result)
+
+
+def fetch_ohlc_incremental(dhan, instrument_df, ticker, interval, duration):
+    """Returns OHLC DataFrame using cache for history and only fetching new candles each call.
+
+    Falls back to a full fetch if no cache exists or cache is from a previous day.
+    """
+    cached = load_ohlc(ticker, interval)
+    today = dt.date.today()
+
+    if cached is not None and not cached.empty and cached.index[-1].date() >= today - dt.timedelta(1):
+        security_id = instrument_lookup(instrument_df, ticker)
+        if security_id is None:
+            raise ValueError(f"Instrument not found: {ticker}")
+
+        interval_mins = _INTERVAL_MAP.get(interval, 5)
+        last_ts = cached.index[-1]
+        from_dt = (last_ts + pd.Timedelta(minutes=interval_mins)).strftime('%Y-%m-%d %H:%M:%S')
+        to_dt   = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        try:
+            result = dhan.intraday_minute_data(
+                security_id=security_id,
+                exchange_segment='NSE_EQ',
+                instrument_type='EQUITY',
+                interval=interval_mins,
+                from_date=from_dt,
+                to_date=to_dt,
+            )
+            if result.get('status') == 'success':
+                new_df = _response_to_df(result)
+                combined = pd.concat([cached, new_df])
+                combined = combined[~combined.index.duplicated(keep='last')]
+            else:
+                combined = cached
+        except Exception:
+            combined = cached
+
+        cutoff = pd.Timestamp(today - dt.timedelta(days=duration))
+        combined = combined[combined.index >= cutoff]
+        save_ohlc(ticker, interval, combined)
+        return combined
+
+    df = fetch_ohlc(dhan, instrument_df, ticker, interval, duration)
+    save_ohlc(ticker, interval, df)
+    return df
 
 
 def fetch_ohlc_extended(dhan, instrument_df, ticker, inception_date, interval):
