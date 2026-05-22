@@ -1,8 +1,11 @@
 import io
 import logging
 import datetime as dt
+from pathlib import Path
 import pandas as pd
 import requests
+
+_CACHE_DIR = Path('data/cache')
 
 # TODO (multi-broker): this module is Dhan-specific. Future refactor: move behind
 # a BaseBroker.get_instruments() / BaseBroker.fetch_ohlc() interface.
@@ -128,6 +131,21 @@ def fetch_ohlc_extended(dhan, instrument_df, ticker, inception_date, interval):
     return pd.concat(chunks)
 
 
+def save_ohlc(ticker, interval, df):
+    """Saves an OHLCV DataFrame to the local cache as a CSV."""
+    path = _CACHE_DIR / f'{ticker}_{interval}.csv'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path)
+
+
+def load_ohlc(ticker, interval):
+    """Loads a cached OHLCV DataFrame, or returns None if not cached."""
+    path = _CACHE_DIR / f'{ticker}_{interval}.csv'
+    if not path.exists():
+        return None
+    return pd.read_csv(path, index_col='date', parse_dates=True)
+
+
 def fetch_ltp(dhan, instrument_df, ticker):
     """Returns last traded price for an NSE equity ticker."""
     security_id = instrument_lookup(instrument_df, ticker)
@@ -137,7 +155,12 @@ def fetch_ltp(dhan, instrument_df, ticker):
         result = dhan.ohlc_data(securities={'NSE_EQ': [int(security_id)]})
         if result.get('status') != 'success':
             return None
-        return result['data']['NSE_EQ'][security_id]['last_price']
+        # Fix 5: Dhan may key the response by int or str — try both
+        nse_data = result['data']['NSE_EQ']
+        ltp_entry = nse_data.get(security_id) or nse_data.get(int(security_id))
+        if ltp_entry is None:
+            return None
+        return ltp_entry['last_price']
     except Exception as e:
         logging.error(f"Error fetching LTP for {ticker}: {e}")
         return None
