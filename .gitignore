@@ -14,3 +14,4 @@ build/
 .venv/
 venv/
 NSE_Instruments.csv
+start_claude.bat

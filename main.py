@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from src.session import load_session
 from src.data import get_instruments
 from src.strategies import three_supertrends
+from src.orders import square_off_all
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,9 +32,11 @@ DRY_RUN = '--dry-run' in sys.argv
 load_dotenv(f'.env.{ENV}', override=True)
 
 # --- config (env file can override these defaults) ---
-CAPITAL  = int(os.getenv('CAPITAL', 3000))
-TICKERS  = os.getenv('TICKERS', 'GODREJCP,DABUR,ICICIPRULI,NAUKRI,HAVELLS,INDHOTEL').split(',')
+CAPITAL          = int(os.getenv('CAPITAL', 3000))
+TICKERS          = os.getenv('TICKERS', 'GODREJCP,DABUR,ICICIPRULI,NAUKRI,HAVELLS,INDHOTEL').split(',')
 INTERVAL_SECONDS = 300
+SQUARE_OFF_HOUR  = 15
+SQUARE_OFF_MIN   = 15  # square off at 3:15 PM, before Dhan's 3:20 PM auto-square-off
 
 
 def is_market_open():
@@ -55,6 +58,18 @@ def _next_market_open():
     return target
 
 
+def _next_close():
+    """Returns timestamp of 15:30 for the current or next trading day."""
+    now   = dt.datetime.now()
+    close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    if now >= close or now.weekday() >= 5:
+        close += dt.timedelta(days=1)
+        while close.weekday() >= 5:
+            close += dt.timedelta(days=1)
+        close = close.replace(hour=15, minute=30, second=0, microsecond=0)
+    return close.timestamp()
+
+
 if __name__ == "__main__":
     dhan = load_session()
     logging.info(f"Session loaded. env={ENV} dry_run={DRY_RUN} tickers={TICKERS} capital={CAPITAL}")
@@ -62,12 +77,24 @@ if __name__ == "__main__":
     instrument_df = get_instruments()
     logging.info(f"Instruments loaded: {len(instrument_df)} records.")
 
-    st_dir    = {ticker: ['None', 'None', 'None'] for ticker in TICKERS}
-    starttime = time.time()
-    timeout   = dt.datetime.now().replace(hour=15, minute=30, second=0, microsecond=0).timestamp()
+    st_dir      = {ticker: ['None', 'None', 'None'] for ticker in TICKERS}
+    starttime   = time.time()
+    timeout     = _next_close()
+    squared_off = False
 
     try:
         while time.time() <= timeout:
+            now = dt.datetime.now()
+
+            # Square off all positions at 3:15 PM, once per session
+            if (not squared_off
+                    and now.weekday() < 5
+                    and (now.hour, now.minute) >= (SQUARE_OFF_HOUR, SQUARE_OFF_MIN)):
+                logging.info("Square-off time reached. Cancelling pending orders and closing all positions.")
+                square_off_all(dhan, dry_run=DRY_RUN)
+                squared_off = True
+                break
+
             if not is_market_open():
                 next_open = _next_market_open()
                 wait_secs = (next_open - dt.datetime.now()).total_seconds()
