@@ -35,14 +35,16 @@ def signal(ohlc, st_dir, ticker):
         return {'action': 'hold', 'sl': current_sl}
 
 
-def run(dhan, instrument_df, tickers, capital, st_dir, prev_signals, dry_run=False):
+def run(dhan, instrument_df, tickers, capital, state, dry_run=False):
     """One pass of the three-supertrend strategy across all tickers.
 
-    st_dir:       dict ticker -> ['None'|'green'|'red', ...] x3, mutated in place.
-    prev_signals: dict ticker -> last action taken ('hold'|'buy'|'sell'), mutated in place.
-                  Entry only fires when action transitions away from the previous value,
-                  preventing duplicate orders across cycles.
+    state keys (all mutated in place):
+      st_dir:       dict ticker -> ['None'|'green'|'red', ...] x3
+      prev_signals: dict ticker -> last action ('hold'|'buy'|'sell')
+      trades:       list of trade records appended each time an order fires
     """
+    st_dir       = state['st_dir']
+    prev_signals = state['prev_signals']
     try:
         positions = dhan.get_positions().get('data', [])
     except Exception:
@@ -68,6 +70,10 @@ def run(dhan, instrument_df, tickers, capital, st_dir, prev_signals, dry_run=Fal
                 continue
 
             ohlc = fetch_ohlc_incremental(dhan, instrument_df, ticker, '5minute', 4)
+            if ohlc.empty:
+                logging.warning(f"Skipping {ticker}: no OHLC data returned.")
+                time.sleep(1)
+                continue
             ohlc['st1'] = supertrend(ohlc, 7, 3)
             ohlc['st2'] = supertrend(ohlc, 10, 3)
             ohlc['st3'] = supertrend(ohlc, 11, 2)
@@ -101,7 +107,15 @@ def run(dhan, instrument_df, tickers, capital, st_dir, prev_signals, dry_run=Fal
                 # Only enter on a fresh transition — avoids re-entry every cycle while
                 # signal stays in the same direction, and prevents re-entry after SL hit
                 # until the signal has cycled back through hold.
-                place_sl_order(dhan, security_id, sig['action'], quantity, sig['sl'], dry_run=dry_run)
+                order_id = place_sl_order(dhan, security_id, sig['action'], quantity, sig['sl'], dry_run=dry_run)
+                state['trades'].append({
+                    'ticker':   ticker,
+                    'action':   sig['action'],
+                    'qty':      quantity,
+                    'sl_price': sig['sl'],
+                    'time':     time.strftime('%H:%M'),
+                    'order_id': order_id,
+                })
 
             prev_signals[ticker] = sig['action']
 

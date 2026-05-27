@@ -35,7 +35,8 @@ def instrument_lookup(instrument_df, symbol):
         mask = (
             (instrument_df['SEM_TRADING_SYMBOL'] == symbol) &
             (instrument_df['SEM_EXM_EXCH_ID'] == 'NSE') &
-            (instrument_df['SEM_INSTRUMENT_NAME'] == 'EQUITY')
+            (instrument_df['SEM_INSTRUMENT_NAME'] == 'EQUITY') &
+            (instrument_df['SEM_SERIES'] == 'EQ')
         )
         return str(instrument_df[mask]['SEM_SMST_SECURITY_ID'].values[0])
     except IndexError:

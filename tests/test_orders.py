@@ -72,6 +72,20 @@ class TestPlaceSlOrder:
         assert entry_call.kwargs['transaction_type'] == dhan.SELL
         assert sl_call.kwargs['transaction_type'] == dhan.BUY
 
+    def test_dry_run_returns_none(self, dhan):
+        result = place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=True)
+        assert result is None
+
+    def test_successful_order_returns_order_id(self, dhan):
+        dhan.place_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD42'}}
+        result = place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=False)
+        assert result == 'ORD42'
+
+    def test_entry_rejection_returns_none(self, dhan):
+        dhan.place_order.return_value = {'status': 'failure', 'data': {}}
+        result = place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=False)
+        assert result is None
+
 
 # ── modify_sl_order ───────────────────────────────────────────────────────────
 

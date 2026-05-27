@@ -9,6 +9,7 @@ from src.session import load_session
 from src.data import get_instruments, fetch_ohlc, save_ohlc
 from src.strategies import three_supertrends
 from src.orders import square_off_all
+from src.reporter import print_eod_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +63,31 @@ def _next_close():
     return close.timestamp()
 
 
+def _build_strategies(tickers, capital):
+    """Returns the strategy registry. Add new strategies here."""
+    return [
+        {
+            'name':    'Three Supertrends',
+            'module':  three_supertrends,
+            'tickers': tickers,
+            'capital': capital,
+            'state': {
+                'st_dir':       {t: ['None', 'None', 'None'] for t in tickers},
+                'prev_signals': {t: 'hold' for t in tickers},
+                'trades':       [],
+            },
+        },
+        # To add a second strategy, append another dict here:
+        # {
+        #     'name':    'SMA Crossover',
+        #     'module':  sma_crossover,
+        #     'tickers': ['INFY', 'TCS'],
+        #     'capital': capital // 2,
+        #     'state':   {'prev_signals': {}, 'trades': []},
+        # },
+    ]
+
+
 if __name__ == "__main__":
     dhan = load_session()
     logging.info(f"Session loaded. dry_run={DRY_RUN} tickers={TICKERS} capital={CAPITAL}")
@@ -69,8 +95,11 @@ if __name__ == "__main__":
     instrument_df = get_instruments()
     logging.info(f"Instruments loaded: {len(instrument_df)} records.")
 
+    strategies = _build_strategies(TICKERS, CAPITAL)
+
+    all_tickers = list({t for s in strategies for t in s['tickers']})
     logging.info("Pre-loading OHLC cache for all tickers...")
-    for ticker in TICKERS:
+    for ticker in all_tickers:
         try:
             df = fetch_ohlc(dhan, instrument_df, ticker, '5minute', 4)
             save_ohlc(ticker, '5minute', df)
@@ -80,8 +109,6 @@ if __name__ == "__main__":
         time.sleep(1)
     logging.info("Pre-load complete.")
 
-    st_dir      = {ticker: ['None', 'None', 'None'] for ticker in TICKERS}
-    prev_signals = {ticker: 'hold' for ticker in TICKERS}
     starttime   = time.time()
     timeout     = _next_close()
     squared_off = False
@@ -97,6 +124,8 @@ if __name__ == "__main__":
                 logging.info("Square-off time reached. Cancelling pending orders and closing all positions.")
                 square_off_all(dhan, dry_run=DRY_RUN)
                 squared_off = True
+                for s in strategies:
+                    print_eod_report(s['name'], s['state'], dhan)
                 break
 
             if not is_market_open():
@@ -106,16 +135,19 @@ if __name__ == "__main__":
                 time.sleep(min(wait_secs, 3600))
                 continue
 
-            try:
-                three_supertrends.run(dhan, instrument_df, TICKERS, CAPITAL, st_dir, prev_signals, dry_run=DRY_RUN)
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                logging.error(f"Strategy error: {e}")
+            for s in strategies:
+                try:
+                    s['module'].run(dhan, instrument_df, s['tickers'], s['capital'], s['state'], dry_run=DRY_RUN)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    logging.error(f"Strategy '{s['name']}' error: {e}")
 
             time.sleep(INTERVAL_SECONDS - ((time.time() - starttime) % INTERVAL_SECONDS))
 
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt. Exiting.")
+        for s in strategies:
+            print_eod_report(s['name'], s['state'], dhan)
     finally:
         logging.info("Bot stopped.")

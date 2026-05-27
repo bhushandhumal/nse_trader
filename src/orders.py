@@ -27,10 +27,13 @@ def place_market_order(dhan, security_id, buy_sell, quantity, dry_run=False):
 
 
 def place_sl_order(dhan, security_id, buy_sell, quantity, sl_price, dry_run=False):
-    """Places an intraday entry (MARKET) + protective STOP_LOSS order pair."""
+    """Places an intraday entry (MARKET) + protective STOP_LOSS order pair.
+
+    Returns the entry order_id string on success, None on failure or dry run.
+    """
     if dry_run:
         logging.info(f"[DRY RUN] place_sl_order {buy_sell} {quantity} @ SL {sl_price} security={security_id}")
-        return
+        return None
 
     entry_type = dhan.BUY  if buy_sell == 'buy'  else dhan.SELL
     sl_type    = dhan.SELL if buy_sell == 'buy'  else dhan.BUY
@@ -47,8 +50,9 @@ def place_sl_order(dhan, security_id, buy_sell, quantity, sl_price, dry_run=Fals
     )
     if not entry_resp or entry_resp.get('status') != 'success':
         logging.error(f"Entry order rejected for security={security_id}: {entry_resp}. SL order NOT placed.")
-        return
-    logging.info(f"Entry order placed: {entry_resp.get('data', {}).get('orderId')}")
+        return None
+    order_id = entry_resp.get('data', {}).get('orderId')
+    logging.info(f"Entry order placed: {order_id}")
 
     sl_resp = dhan.place_order(
         security_id=security_id,
@@ -64,6 +68,8 @@ def place_sl_order(dhan, security_id, buy_sell, quantity, sl_price, dry_run=Fals
         logging.error(f"SL order failed for security={security_id}: {sl_resp}. Position is unprotected — exit manually!")
     else:
         logging.info(f"SL order placed: {sl_resp.get('data', {}).get('orderId')} @ {sl_price}")
+
+    return order_id
 
 
 def modify_sl_order(dhan, order_id, quantity, price, dry_run=False):

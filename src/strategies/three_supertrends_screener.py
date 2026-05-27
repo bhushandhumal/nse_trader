@@ -44,7 +44,7 @@ def load_universe():
         )
         resp.raise_for_status()
         df = pd.read_csv(io.StringIO(resp.text))
-        symbols = sorted(df['Symbol'].str.strip().unique().tolist())
+        symbols = sorted(s for s in df['Symbol'].str.strip().unique() if not s.startswith('DUMMY'))
         print(f"Nifty 200 loaded from NSE: {len(symbols)} symbols")
         return symbols
     except Exception as e:
@@ -138,6 +138,56 @@ def compute_atr_pct(df, period=14):
     return round(atr / c[-1] * 100, 2)
 
 
+# ── Validation ───────────────────────────────────────────────────────────────
+
+def validate_tickers(dhan, instrument_df, tickers):
+    """Checks each ticker resolves to a valid EQ security_id and has intraday data.
+
+    Uses the last 2 calendar days so validation works both pre-market and during
+    market hours. Returns (valid, invalid) lists.
+    """
+    today   = dt.date.today()
+    from_dt = (today - dt.timedelta(days=2)).strftime('%Y-%m-%d') + ' 09:15:00'
+    to_dt   = today.strftime('%Y-%m-%d') + ' 15:30:00'
+
+    valid, invalid = [], []
+    print(f"\nValidating {len(tickers)} tickers for intraday availability...")
+    print(f"  {'Ticker':<14}  {'Status':<6}  Detail")
+    print(f"  {'-'*50}")
+
+    for ticker in tickers:
+        sid = instrument_lookup(instrument_df, ticker)
+        if sid is None:
+            print(f"  {ticker:<14}  FAIL   security_id not found in scrip master")
+            invalid.append(ticker)
+            time.sleep(SLEEP_SEC)
+            continue
+        try:
+            result  = dhan.intraday_minute_data(
+                security_id=sid,
+                exchange_segment='NSE_EQ',
+                instrument_type='EQUITY',
+                interval=5,
+                from_date=from_dt,
+                to_date=to_dt,
+            )
+            candles = len(result.get('data', {}).get('close', []))
+            if candles > 0:
+                print(f"  {ticker:<14}  OK     {candles} candles  security_id={sid}")
+                valid.append(ticker)
+            else:
+                print(f"  {ticker:<14}  FAIL   0 candles returned  security_id={sid}")
+                invalid.append(ticker)
+        except Exception as e:
+            print(f"  {ticker:<14}  FAIL   {e}")
+            invalid.append(ticker)
+        time.sleep(SLEEP_SEC)
+
+    print(f"\n  {len(valid)} valid  |  {len(invalid)} removed", end="")
+    print(f": {invalid}" if invalid else "")
+    return valid, invalid
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -190,11 +240,14 @@ def main():
     print(f"  {len(top)} selected  |  {len(filtered)} passed filters  |  "
           f"{len(df_res)} screened  |  {len(errors)} errors")
 
-    tickers_line = "TICKERS=" + ",".join(top['ticker'].tolist())
+    valid, _ = validate_tickers(dhan, instrument_df, top['ticker'].tolist())
+    top = top[top['ticker'].isin(valid)].reset_index(drop=True)
+
+    tickers_line = 'TICKERS="' + ",".join(top['ticker'].tolist()) + '"'
     print(f"\n{'-' * 62}")
     print(tickers_line)
     print(f"{'-' * 62}")
-    print("\nPaste the TICKERS= line above into .env.prod, then start the bot.")
+    print("\nPaste the TICKERS= line above into .env, then start the bot.")
 
 
 if __name__ == '__main__':
