@@ -26,12 +26,11 @@ nse_trader/
     ├── session.py                        # TOTP login, token caching
     ├── data.py                           # fetch_ohlc, fetch_ltp, instrument_lookup
     ├── indicators.py                     # atr, supertrend, sl_price
-    ├── candlesticks.py                   # pattern detection + pivot levels
     ├── orders.py                         # place_sl_order, modify_sl_order, square_off_all
+    ├── reporter.py                       # EOD trade log + P&L report
     └── strategies/
         ├── three_supertrends.py          # main intraday strategy
-        ├── three_supertrends_screener.py # pre-market Nifty 200 screener
-        └── sma_crossover.py
+        └── three_supertrends_screener.py # pre-market Nifty 200 screener
 ```
 
 ## Setup

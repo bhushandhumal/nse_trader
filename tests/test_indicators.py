@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.indicators import atr, supertrend, sl_price, update_st_direction, sma_crossover_signal
+from src.indicators import atr, supertrend, sl_price, update_st_direction
 
 
 def _ohlcv(closes, spread=2.0):
@@ -164,27 +164,3 @@ class TestUpdateStDirection:
         assert st_dir['RELIANCE'] is original  # same list object, mutated
 
 
-# ── sma_crossover_signal ──────────────────────────────────────────────────────
-
-class TestSmaCrossoverSignal:
-    def _make_closes(self, values):
-        idx = pd.date_range('2026-01-01', periods=len(values), freq='5min')
-        return pd.DataFrame({'close': values}, index=idx)
-
-    def test_fast_crosses_above_slow_returns_buy(self):
-        # 19 flat bars then one sharp spike → fast SMA crosses above slow on the last bar
-        closes = [100.0] * 19 + [1000.0]
-        df = self._make_closes(closes)
-        assert sma_crossover_signal(df) == 1
-
-    def test_fast_crosses_below_slow_returns_sell(self):
-        # 5 low bars, 14 high bars, then one sharp drop → fast crosses below slow on last bar
-        closes = [100.0] * 5 + [1000.0] * 14 + [100.0]
-        df = self._make_closes(closes)
-        assert sma_crossover_signal(df) == -1
-
-    def test_no_crossover_returns_zero(self):
-        # Steadily rising → fast always above slow, no crossover on last bar
-        closes = list(range(100, 125))
-        df = self._make_closes(closes)
-        assert sma_crossover_signal(df) == 0

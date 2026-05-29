@@ -74,11 +74,3 @@ def update_st_direction(st_dir, ohlc, ticker):
             st_dir[ticker][i] = 'green'
 
 
-def sma_crossover_signal(ohlc, fast=5, slow=15):
-    """Returns 1 (buy), -1 (sell), or 0 (no change) based on last SMA crossover."""
-    d = ohlc.copy()
-    d['fast'] = d['close'].rolling(window=fast).mean()
-    d['slow'] = d['close'].rolling(window=slow).mean()
-    d['signal'] = np.where(d['fast'] > d['slow'], 1.0, 0.0)
-    position = d['signal'].diff().iloc[-1]
-    return int(position)
