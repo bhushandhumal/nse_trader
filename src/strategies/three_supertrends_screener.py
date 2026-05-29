@@ -20,7 +20,7 @@ import requests
 from dotenv import load_dotenv
 
 from src.session import load_session
-from src.data import get_instruments, fetch_ohlc
+from src.data import get_instruments, fetch_ohlc, instrument_lookup
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADX_MIN      = 25    # minimum ADX to consider trending

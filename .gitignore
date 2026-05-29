@@ -1,5 +1,8 @@
 .env
 .token_cache
+.claude/
+.coverage
+signals_raw.txt
 __pycache__/
 *.pyc
 *.pyo
