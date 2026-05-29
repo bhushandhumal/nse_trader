@@ -55,11 +55,12 @@ class TestResponseToDf:
 # ── instrument_lookup ─────────────────────────────────────────────────────────
 
 class TestInstrumentLookup:
-    def _make_df(self, symbol, exch, inst_name, sec_id):
+    def _make_df(self, symbol, exch, inst_name, sec_id, series='EQ'):
         return pd.DataFrame([{
-            'SEM_TRADING_SYMBOL':  symbol,
-            'SEM_EXM_EXCH_ID':     exch,
-            'SEM_INSTRUMENT_NAME': inst_name,
+            'SEM_TRADING_SYMBOL':   symbol,
+            'SEM_EXM_EXCH_ID':      exch,
+            'SEM_INSTRUMENT_NAME':  inst_name,
+            'SEM_SERIES':           series,
             'SEM_SMST_SECURITY_ID': sec_id,
         }])
 
@@ -78,3 +79,14 @@ class TestInstrumentLookup:
     def test_filters_by_equity_only(self):
         df = self._make_df('RELIANCE', 'NSE', 'FUTIDX', 99999)
         assert instrument_lookup(df, 'RELIANCE') is None
+
+    def test_filters_by_eq_series_only(self):
+        df = self._make_df('RELIANCE', 'NSE', 'EQUITY', 99999, series='BE')
+        assert instrument_lookup(df, 'RELIANCE') is None
+
+    def test_picks_eq_when_multiple_series_exist(self):
+        df = pd.concat([
+            self._make_df('MOTHERSON', 'NSE', 'EQUITY', 11111, series='BE'),
+            self._make_df('MOTHERSON', 'NSE', 'EQUITY', 22222, series='EQ'),
+        ], ignore_index=True)
+        assert instrument_lookup(df, 'MOTHERSON') == '22222'
