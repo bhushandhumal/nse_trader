@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from src.session import load_session
 from src.data import get_instruments, fetch_ohlc, save_ohlc
 from src.strategies import three_supertrends
-from src.orders import square_off_all
+from src.orders import square_off_all, verify_order_placement
 from src.reporter import print_eod_report
 
 logging.basicConfig(
@@ -39,6 +39,12 @@ def is_market_open():
     open_time  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
     close_time = now.replace(hour=15, minute=30, second=0, microsecond=0)
     return open_time <= now <= close_time
+
+
+def _is_square_off_time(now=None):
+    """True on a weekday at/after the square-off time (3:15 PM)."""
+    now = now or dt.datetime.now()
+    return now.weekday() < 5 and (now.hour, now.minute) >= (SQUARE_OFF_HOUR, SQUARE_OFF_MIN)
 
 
 def _next_market_open():
@@ -95,6 +101,16 @@ if __name__ == "__main__":
     instrument_df = get_instruments()
     logging.info(f"Instruments loaded: {len(instrument_df)} records.")
 
+    # Preflight: confirm the broker will accept live orders before we start trading.
+    # Skipped in dry-run (no real orders are placed there anyway).
+    if not DRY_RUN:
+        if not verify_order_placement(dhan, instrument_df, TICKERS):
+            logging.error("Order-placement preflight FAILED — aborting before the trading loop. "
+                          "Likely Dhan IP whitelist / stale token. Fix: whitelist this machine's "
+                          "public IPv4 on Dhan and regenerate the token (delete .token_cache), "
+                          "then restart.")
+            sys.exit(1)
+
     strategies = _build_strategies(TICKERS, CAPITAL)
 
     all_tickers = list({t for s in strategies for t in s['tickers']})
@@ -118,9 +134,7 @@ if __name__ == "__main__":
             now = dt.datetime.now()
 
             # Square off all positions at 3:15 PM, once per session
-            if (not squared_off
-                    and now.weekday() < 5
-                    and (now.hour, now.minute) >= (SQUARE_OFF_HOUR, SQUARE_OFF_MIN)):
+            if not squared_off and _is_square_off_time(now):
                 logging.info("Square-off time reached. Cancelling pending orders and closing all positions.")
                 square_off_all(dhan, dry_run=DRY_RUN)
                 squared_off = True
@@ -143,7 +157,13 @@ if __name__ == "__main__":
                 except Exception as e:
                     logging.error(f"Strategy '{s['name']}' error: {e}")
 
-            time.sleep(INTERVAL_SECONDS - ((time.time() - starttime) % INTERVAL_SECONDS))
+            # Interruptible wait until the next cycle: poll every 10s and break out
+            # the moment square-off time arrives, so we fire it within seconds of
+            # 3:15 PM and beat the broker's auto-square-off — instead of being up to
+            # one full interval (5 min) late, as happened before this guard.
+            next_cycle = time.time() + (INTERVAL_SECONDS - ((time.time() - starttime) % INTERVAL_SECONDS))
+            while time.time() < next_cycle and not _is_square_off_time():
+                time.sleep(min(10, next_cycle - time.time()))
 
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt. Exiting.")

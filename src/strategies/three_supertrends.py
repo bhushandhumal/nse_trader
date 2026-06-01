@@ -2,7 +2,7 @@ import time
 import logging
 import traceback
 import pandas as pd
-from src.data import fetch_ohlc_incremental, instrument_lookup
+from src.data import fetch_ohlc_incremental, instrument_lookup, get_tick_size
 from src.indicators import supertrend, sl_price, update_st_direction
 from src.orders import place_sl_order, modify_sl_order
 
@@ -68,6 +68,7 @@ def run(dhan, instrument_df, tickers, capital, state, dry_run=False):
                 logging.warning(f"Skipping {ticker}: security_id not found.")
                 time.sleep(1)
                 continue
+            tick = get_tick_size(instrument_df, ticker)
 
             ohlc = fetch_ohlc_incremental(dhan, instrument_df, ticker, '5minute', 4)
             if ohlc.empty:
@@ -81,7 +82,7 @@ def run(dhan, instrument_df, tickers, capital, state, dry_run=False):
             # Fix 1: guard against zero quantity when capital < stock price
             quantity = min(int(capital / ohlc['close'].iloc[-1]), 1000)
             if quantity < 1:
-                logging.warning(f"Skipping {ticker}: quantity=0 (capital ₹{capital} < price ₹{ohlc['close'].iloc[-1]:.1f})")
+                logging.warning(f"Skipping {ticker}: quantity=0 (capital Rs{capital} < price Rs{ohlc['close'].iloc[-1]:.1f})")
                 time.sleep(1)
                 continue
 
@@ -102,12 +103,15 @@ def run(dhan, instrument_df, tickers, capital, state, dry_run=False):
                 ]
                 if not pending.empty:
                     row = pending.iloc[0]
-                    modify_sl_order(dhan, row['orderId'], int(row['quantity']), sig['sl'], dry_run=dry_run)
+                    entry_side = 'buy' if pos_map.get(ticker, 0) > 0 else 'sell'
+                    modify_sl_order(dhan, row['orderId'], int(row['quantity']), sig['sl'],
+                                    entry_side, tick_size=tick, dry_run=dry_run)
             elif not has_position and sig['action'] != 'hold' and sig['action'] != prev:
                 # Only enter on a fresh transition — avoids re-entry every cycle while
                 # signal stays in the same direction, and prevents re-entry after SL hit
                 # until the signal has cycled back through hold.
-                order_id = place_sl_order(dhan, security_id, sig['action'], quantity, sig['sl'], dry_run=dry_run)
+                order_id = place_sl_order(dhan, security_id, sig['action'], quantity, sig['sl'],
+                                          tick_size=tick, dry_run=dry_run)
                 state['trades'].append({
                     'ticker':   ticker,
                     'action':   sig['action'],

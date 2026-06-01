@@ -72,6 +72,38 @@ class TestPlaceSlOrder:
         assert entry_call.kwargs['transaction_type'] == dhan.SELL
         assert sl_call.kwargs['transaction_type'] == dhan.BUY
 
+    def test_sl_leg_limit_offset_from_trigger(self, dhan):
+        # SL leg must be an SL (limit) order whose limit price differs from the
+        # trigger in the fill direction, or Dhan rejects it with DH-906.
+        dhan.place_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD1'}}
+        # Long (entry buy) -> SELL stop, limit BELOW trigger.
+        place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=False)
+        _, sl_call = dhan.place_order.call_args_list
+        assert sl_call.kwargs['order_type'] == dhan.SL
+        assert sl_call.kwargs['trigger_price'] == 1400.0
+        assert sl_call.kwargs['price'] < sl_call.kwargs['trigger_price']
+
+    def test_sl_leg_limit_above_trigger_for_short(self, dhan):
+        dhan.place_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD1'}}
+        # Short (entry sell) -> BUY stop, limit ABOVE trigger.
+        place_sl_order(dhan, '12345', 'sell', 10, 1600.0, dry_run=False)
+        _, sl_call = dhan.place_order.call_args_list
+        assert sl_call.kwargs['order_type'] == dhan.SL
+        assert sl_call.kwargs['trigger_price'] == 1600.0
+        assert sl_call.kwargs['price'] > sl_call.kwargs['trigger_price']
+
+    def test_sl_prices_rounded_to_instrument_tick(self, dhan):
+        # With a Rs 0.10 tick, both trigger and limit must be multiples of 0.10
+        # (the EXCH:16283 'not multiple of tick size' rejection).
+        dhan.place_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD1'}}
+        place_sl_order(dhan, '7229', 'sell', 4, 1212.07, tick_size=0.10, dry_run=False)
+        _, sl_call = dhan.place_order.call_args_list
+        trig = sl_call.kwargs['trigger_price']
+        px   = sl_call.kwargs['price']
+        assert round(trig / 0.10) * 0.10 == pytest.approx(trig)
+        assert round(px / 0.10) * 0.10 == pytest.approx(px)
+        assert px > trig  # short -> BUY stop, limit above trigger
+
     def test_dry_run_returns_none(self, dhan):
         result = place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=True)
         assert result is None
@@ -86,24 +118,49 @@ class TestPlaceSlOrder:
         result = place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=False)
         assert result is None
 
+    def test_entry_exchange_rejection_after_submission_skips_sl(self, dhan, caplog):
+        # Dhan accepts submission, but the exchange rejects it afterward.
+        dhan.place_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD1'}}
+        dhan.get_order_by_id.return_value = {
+            'data': {'orderStatus': 'REJECTED', 'omsErrorDescription': 'circuit limit'}}
+        with caplog.at_level(logging.ERROR):
+            result = place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=False)
+        assert result is None
+        assert dhan.place_order.call_count == 1   # SL never attempted
+        assert 'No position opened' in caplog.text
+
+    def test_sl_exchange_rejection_after_submission_flags_unprotected(self, dhan, caplog):
+        dhan.place_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD1'}}
+        dhan.get_order_by_id.side_effect = [
+            {'data': {'orderStatus': 'TRADED'}},                                  # entry OK
+            {'data': {'orderStatus': 'REJECTED', 'omsErrorDescription': 'tick'}}, # SL rejected
+        ]
+        with caplog.at_level(logging.ERROR):
+            result = place_sl_order(dhan, '12345', 'buy', 10, 1400.0, dry_run=False)
+        assert result == 'ORD1'                    # entry filled; trade still recorded by caller
+        assert dhan.place_order.call_count == 2     # both legs submitted
+        assert 'UNPROTECTED' in caplog.text
+
 
 # ── modify_sl_order ───────────────────────────────────────────────────────────
 
 class TestModifySlOrder:
     def test_dry_run_logs_and_no_api_call(self, dhan, caplog):
         with caplog.at_level(logging.INFO):
-            modify_sl_order(dhan, 'ORD1', 10, 1350.0, dry_run=True)
+            modify_sl_order(dhan, 'ORD1', 10, 1350.0, 'buy', dry_run=True)
         assert '[DRY RUN]' in caplog.text
         assert 'ORD1' in caplog.text
         dhan.modify_order.assert_not_called()
 
     def test_live_calls_modify_order(self, dhan):
-        modify_sl_order(dhan, 'ORD1', 10, 1350.0, dry_run=False)
+        modify_sl_order(dhan, 'ORD1', 10, 1350.0, 'buy', dry_run=False)
         dhan.modify_order.assert_called_once()
         call_kwargs = dhan.modify_order.call_args.kwargs
         assert call_kwargs['order_id'] == 'ORD1'
-        assert call_kwargs['price'] == 1350.0
+        assert call_kwargs['order_type'] == dhan.SL
         assert call_kwargs['trigger_price'] == 1350.0
+        # long -> SELL stop, limit below trigger
+        assert call_kwargs['price'] < call_kwargs['trigger_price']
 
 
 # ── square_off_all ────────────────────────────────────────────────────────────

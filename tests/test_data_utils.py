@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 
-from src.data import _response_to_df, instrument_lookup
+from src.data import _response_to_df, instrument_lookup, get_tick_size
 
 
 # ── _response_to_df ───────────────────────────────────────────────────────────
@@ -90,3 +90,29 @@ class TestInstrumentLookup:
             self._make_df('MOTHERSON', 'NSE', 'EQUITY', 22222, series='EQ'),
         ], ignore_index=True)
         assert instrument_lookup(df, 'MOTHERSON') == '22222'
+
+
+# ── get_tick_size ─────────────────────────────────────────────────────────────
+
+class TestGetTickSize:
+    def _make_df(self, symbol, tick_paise, series='EQ'):
+        return pd.DataFrame([{
+            'SEM_TRADING_SYMBOL':   symbol,
+            'SEM_EXM_EXCH_ID':      'NSE',
+            'SEM_INSTRUMENT_NAME':  'EQUITY',
+            'SEM_SERIES':           series,
+            'SEM_SMST_SECURITY_ID': 1,
+            'SEM_TICK_SIZE':        tick_paise,
+        }])
+
+    def test_converts_paise_to_rupees(self):
+        # SEM_TICK_SIZE is in paise: 10.0 -> Rs 0.10, 50.0 -> Rs 0.50, 1.0 -> Rs 0.01
+        assert get_tick_size(self._make_df('HCLTECH', 10.0), 'HCLTECH') == 0.10
+        assert get_tick_size(self._make_df('GVTD', 50.0), 'GVTD') == 0.50
+        assert get_tick_size(self._make_df('IDEA', 1.0), 'IDEA') == 0.01
+
+    def test_defaults_to_005_for_unknown_symbol(self):
+        assert get_tick_size(self._make_df('HCLTECH', 10.0), 'UNKNOWN') == 0.05
+
+    def test_defaults_to_005_when_tick_missing_or_zero(self):
+        assert get_tick_size(self._make_df('FOO', 0.0), 'FOO') == 0.05

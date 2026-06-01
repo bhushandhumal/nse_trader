@@ -43,6 +43,26 @@ def instrument_lookup(instrument_df, symbol):
         return None
 
 
+def get_tick_size(instrument_df, symbol):
+    """Returns the NSE-equity tick size in rupees for a symbol (default 0.05).
+
+    Dhan's scrip master stores SEM_TICK_SIZE in paise (1.0 -> Rs 0.01,
+    10.0 -> Rs 0.10, 50.0 -> Rs 0.50). Order prices must be a multiple of this
+    or the exchange rejects them (EXCH:16283).
+    """
+    try:
+        mask = (
+            (instrument_df['SEM_TRADING_SYMBOL'] == symbol) &
+            (instrument_df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (instrument_df['SEM_INSTRUMENT_NAME'] == 'EQUITY') &
+            (instrument_df['SEM_SERIES'] == 'EQ')
+        )
+        tick = round(float(instrument_df[mask]['SEM_TICK_SIZE'].values[0]) / 100.0, 2)
+        return tick if tick > 0 else 0.05
+    except (IndexError, ValueError, KeyError, TypeError):
+        return 0.05
+
+
 def _response_to_df(result):
     """Normalises a Dhan historical/intraday response to a date-indexed OHLCV DataFrame."""
     if result.get('status') == 'failure':
@@ -207,8 +227,10 @@ def fetch_ltp(dhan, instrument_df, ticker):
         result = dhan.ohlc_data(securities={'NSE_EQ': [int(security_id)]})
         if result.get('status') != 'success':
             return None
+        # Fix 6: SDK nests the payload as data -> data -> NSE_EQ -> "<security_id>"
+        payload  = result.get('data', {})
+        nse_data = payload.get('data', payload).get('NSE_EQ', {})
         # Fix 5: Dhan may key the response by int or str — try both
-        nse_data = result['data']['NSE_EQ']
         ltp_entry = nse_data.get(security_id) or nse_data.get(int(security_id))
         if ltp_entry is None:
             return None
