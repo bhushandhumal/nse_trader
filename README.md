@@ -7,11 +7,10 @@ An intraday trading bot for NSE (India) built on the [Dhan API](https://dhanhq.c
 - **TOTP-based auth** — auto-generates a fresh Dhan access token on startup using PIN + TOTP; no manual token rotation needed
 - **Three Supertrends strategy** — ATR-based trend confirmation across three parameter sets
 - **Pre-market screener** — scans Nifty 200 each morning, ranks by ADX and ATR%, outputs a ready-to-paste `TICKERS=` line
-- **SMA Crossover strategy** — fast/slow moving average crossover signals
-- **Candlestick pattern scanner** — doji, hammer, shooting star, marubozu
-- **Pivot point support/resistance** — floor pivot levels
+- **Order-placement preflight** — on startup the bot places and cancels a tiny non-marketable order to confirm the broker will accept live orders (catches IP-whitelist / stale-token issues) *before* trading; it aborts with a clear message if blocked
+- **Protected entries** — every entry is paired with a stop-loss order, priced to the instrument's real tick size, and its status is confirmed *after* submission so a rejected (unprotected) position is flagged loudly instead of silently
 - **Market hours guard** — runs only during NSE session (Mon–Fri, 9:15–15:30)
-- **Square-off** — closes all positions at 3:15 PM before Dhan's auto square-off
+- **Square-off** — closes all positions promptly at 3:15 PM (fires within seconds, beating Dhan's ~3:20 PM auto square-off)
 
 ## Project Structure
 
@@ -22,11 +21,12 @@ nse_trader/
 ├── requirements.txt
 ├── main.py                               # entry point
 ├── check_connection.py                   # verify Dhan session and API access
+├── test_dhan_order.py                    # standalone order-placement check (place + cancel)
 └── src/
     ├── session.py                        # TOTP login, token caching
-    ├── data.py                           # fetch_ohlc, fetch_ltp, instrument_lookup
+    ├── data.py                           # fetch_ohlc, fetch_ltp, instrument_lookup, get_tick_size
     ├── indicators.py                     # atr, supertrend, sl_price
-    ├── orders.py                         # place_sl_order, modify_sl_order, square_off_all
+    ├── orders.py                         # verify_order_placement, place_sl_order, modify_sl_order, square_off_all
     ├── reporter.py                       # EOD trade log + P&L report
     └── strategies/
         ├── three_supertrends.py          # main intraday strategy
@@ -35,13 +35,18 @@ nse_trader/
 
 ## Setup
 
-### 1. Clone and install dependencies
+### 1. Clone, create a virtualenv, and install dependencies
 
 ```bash
 git clone https://github.com/bhushandhumal/nse_trader.git
 cd nse_trader
+python -m venv .venv
+# activate it:  Windows -> .venv\Scripts\Activate.ps1   |   macOS/Linux -> source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+> Always run the bot, screener, and tests **inside the virtualenv**. All commands
+> below assume the venv is activated.
 
 ### 2. Configure credentials
 
@@ -97,7 +102,17 @@ python main.py --dry-run   # paper trading
 python main.py             # live trading
 ```
 
-The bot runs every 5 minutes, places SL orders on supertrend signals, and squares off all positions at 3:15 PM.
+On startup (live mode) the bot runs an **order-placement preflight** — it places and
+cancels a tiny non-marketable order to confirm the broker will accept orders, and
+**aborts** if blocked (e.g. IP not whitelisted / stale token). It then runs every
+5 minutes, places a protected entry (market entry + stop-loss) on supertrend
+signals, trails the stop, and squares off all positions at 3:15 PM.
+
+You can also run the order-placement check on its own at any time:
+
+```bash
+python test_dhan_order.py   # places a non-fillable order, then cancels it (costs nothing)
+```
 
 ## Configuration
 
@@ -117,13 +132,65 @@ Places an intraday entry + stop-loss order when all three supertrend indicators 
 | ATR period | 7   | 10  | 11  |
 | Multiplier | 3   | 3   | 2   |
 
+Position size: `qty = min(int(CAPITAL / price), 1000)` — so a stock priced above
+`CAPITAL` is skipped (quantity 0).
+
+### Stop-loss
+
+The stop is derived from the three supertrend lines on the last 5-minute candle
+(`sl_price` in `indicators.py`):
+
+- **Long** (all lines below price): `SL = 0.6·(highest line) + 0.4·(2nd-highest)` → below entry
+- **Short** (all lines above price): `SL = 0.6·(lowest line) + 0.4·(2nd-lowest)` → above entry
+- **Lines straddle price**: `SL = mean(lines)`
+
+Because each supertrend line is `midpoint ± multiplier·ATR`, the stop sits roughly
+**2.4·ATR** from entry. It is placed as a stop-**limit** order (the limit offset from
+the trigger and rounded to the instrument's tick) and **trailed** every cycle.
+
+### Estimating max loss
+
+Per position, `risk ≈ qty · |entry − SL| ≈ CAPITAL · (SL distance / price)`. Since the
+SL distance is ~2.4× the *5-minute* ATR, the designed loss per position is roughly
+**0.5–1% of CAPITAL** (use ~1% as a safe planning figure). Portfolio designed loss ≈
+that fraction of total deployed capital.
+
+> ⚠️ This assumes stops fill at their trigger. If a stop is rejected, unfilled on a
+> gap, or the stock hits a circuit, a position's loss is bounded instead by its
+> **notional (~CAPITAL)** — much larger. Size against total notional exposure, not
+> the designed loss, and treat any "UNPROTECTED" log line as a signal to flatten
+> manually.
+
+## Order reliability & safeguards
+
+Live order placement on Dhan has several gotchas the bot now handles:
+
+- **IP whitelist (`DH-905 Invalid IP`)** — Dhan only accepts orders from a whitelisted
+  public IP. Whitelist this machine's **public IPv4** in your DhanHQ API settings.
+  After changing it you may need a **fresh token** (delete `.token_cache`) for the
+  change to take effect. The startup preflight catches this before trading.
+- **Stop-loss price rules (`DH-906`)** — a stop order's limit price must differ from
+  its trigger; SL-Market is not accepted. The bot places a stop-**limit** with the
+  limit offset from the trigger in the fill direction.
+- **Tick size (`EXCH:16283`)** — order prices must be a multiple of the instrument's
+  tick (read from the scrip master; ₹0.05/₹0.10/₹0.50 depending on price). The bot
+  rounds every trigger and limit to the correct tick.
+- **Submission ≠ acceptance** — Dhan returns `success` on submission, but the exchange
+  can reject milliseconds later. The bot polls order status after placing and logs
+  `Position is UNPROTECTED — exit manually!` if a stop is rejected post-submission.
+
+If you ever see an `UNPROTECTED` warning, exit that position manually — the bot will
+otherwise leave it open until the 3:15 PM square-off.
+
 ## Tests
 
 ```bash
 pytest tests/ -v --cov=src
 ```
 
-87 tests covering indicators, orders, signal logic, data utilities, and candlestick patterns.
+105 tests covering indicators, orders (placement, stop-loss tick rounding, status
+confirmation), signal logic, data utilities, tick size, square-off timing, and
+candlestick patterns.
 
 ## Requirements
 
