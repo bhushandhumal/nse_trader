@@ -17,3 +17,8 @@ venv/
 NSE_Instruments.csv
 start_claude.bat
 update_claude.bat
+
+# Local-only operator content folded in from nse_trader-shared (2026-06-01).
+# Kept out of the public repo — contains personal capital sizing / P&L / paths.
+/doc/
+/scripts/
