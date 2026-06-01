@@ -237,7 +237,7 @@ def modify_sl_order(dhan, order_id, quantity, sl_price, buy_sell, tick_size=0.05
         return
 
     sl_trigger, sl_limit = _sl_trigger_and_limit(sl_price, buy_sell, tick_size)
-    dhan.modify_order(
+    resp = dhan.modify_order(
         order_id=order_id,
         order_type=dhan.SL,
         leg_name='',
@@ -247,6 +247,13 @@ def modify_sl_order(dhan, order_id, quantity, sl_price, buy_sell, tick_size=0.05
         disclosed_quantity=0,
         validity='DAY',
     )
+    # Check the submission response (free — no extra API call). A failed trail just
+    # leaves the previous SL resting (still protected at the old level), so this is a
+    # warning, not an error. Note: this catches submission-level rejections only, not
+    # a later exchange rejection.
+    if not resp or resp.get('status') != 'success':
+        logging.warning(f"SL modify for order {order_id} not accepted: {resp}. "
+                        f"Previous SL remains active (stop not trailed to {sl_trigger}).")
 
 
 def square_off_all(dhan, dry_run=False):

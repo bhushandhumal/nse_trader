@@ -153,6 +153,7 @@ class TestModifySlOrder:
         dhan.modify_order.assert_not_called()
 
     def test_live_calls_modify_order(self, dhan):
+        dhan.modify_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD1'}}
         modify_sl_order(dhan, 'ORD1', 10, 1350.0, 'buy', dry_run=False)
         dhan.modify_order.assert_called_once()
         call_kwargs = dhan.modify_order.call_args.kwargs
@@ -161,6 +162,19 @@ class TestModifySlOrder:
         assert call_kwargs['trigger_price'] == 1350.0
         # long -> SELL stop, limit below trigger
         assert call_kwargs['price'] < call_kwargs['trigger_price']
+
+    def test_warns_when_modify_rejected(self, dhan, caplog):
+        # A failed trail leaves the previous SL resting -> warn, don't error.
+        dhan.modify_order.return_value = {'status': 'failure', 'remarks': 'bad price'}
+        with caplog.at_level(logging.WARNING):
+            modify_sl_order(dhan, 'ORD1', 10, 1350.0, 'buy', dry_run=False)
+        assert 'Previous SL remains active' in caplog.text
+
+    def test_no_warning_when_modify_succeeds(self, dhan, caplog):
+        dhan.modify_order.return_value = {'status': 'success', 'data': {'orderId': 'ORD1'}}
+        with caplog.at_level(logging.WARNING):
+            modify_sl_order(dhan, 'ORD1', 10, 1350.0, 'buy', dry_run=False)
+        assert 'Previous SL remains active' not in caplog.text
 
 
 # ── square_off_all ────────────────────────────────────────────────────────────
