@@ -10,6 +10,7 @@ from src.data import get_instruments, fetch_ohlc, save_ohlc
 from src.strategies import three_supertrends
 from src.orders import square_off_all, verify_order_placement
 from src.reporter import print_eod_report
+from src.paper_broker import PaperBroker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,6 +102,16 @@ if __name__ == "__main__":
     instrument_df = get_instruments()
     logging.info(f"Instruments loaded: {len(instrument_df)} records.")
 
+    # In dry-run, route orders through an in-memory paper broker instead of the
+    # log-only shortcut. The real order path (place_sl_order / modify_sl_order /
+    # square_off_all) then runs against simulated fills, so the SL actually trails
+    # and exits/P&L are simulated — a faithful proxy for live. The wrapper delegates
+    # all market-data calls to the real client, so OHLC/quotes are still real.
+    if DRY_RUN:
+        dhan = PaperBroker(dhan, instrument_df)
+        logging.info("DRY RUN: orders routed through in-memory PaperBroker "
+                     "(simulated fills, real SL trailing + P&L).")
+
     # Preflight: confirm the broker will accept live orders before we start trading.
     # Skipped in dry-run (no real orders are placed there anyway).
     if not DRY_RUN:
@@ -136,7 +147,9 @@ if __name__ == "__main__":
             # Square off all positions at 3:15 PM, once per session
             if not squared_off and _is_square_off_time(now):
                 logging.info("Square-off time reached. Cancelling pending orders and closing all positions.")
-                square_off_all(dhan, dry_run=DRY_RUN)
+                # dry_run=False even in a dry run: the PaperBroker (swapped in above)
+                # provides the simulation, so the real square-off path must execute.
+                square_off_all(dhan, dry_run=False)
                 squared_off = True
                 for s in strategies:
                     print_eod_report(s['name'], s['state'], dhan)
@@ -151,7 +164,9 @@ if __name__ == "__main__":
 
             for s in strategies:
                 try:
-                    s['module'].run(dhan, instrument_df, s['tickers'], s['capital'], s['state'], dry_run=DRY_RUN)
+                    # dry_run=False: the PaperBroker handles dry-run simulation, so the
+                    # strategy runs its real order path (entry + trailing SL) against it.
+                    s['module'].run(dhan, instrument_df, s['tickers'], s['capital'], s['state'], dry_run=False)
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:

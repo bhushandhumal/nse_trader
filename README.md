@@ -27,6 +27,7 @@ nse_trader/
     ├── data.py                           # fetch_ohlc, fetch_ltp, instrument_lookup, get_tick_size
     ├── indicators.py                     # atr, supertrend, sl_price
     ├── orders.py                         # verify_order_placement, place_sl_order, modify_sl_order, square_off_all
+    ├── paper_broker.py                   # in-memory broker for --dry-run (simulated fills, real SL trailing + P&L)
     ├── reporter.py                       # EOD trade log + P&L report
     └── strategies/
         ├── three_supertrends.py          # main intraday strategy
@@ -108,6 +109,24 @@ cancels a tiny non-marketable order to confirm the broker will accept orders, an
 5 minutes, places a protected entry (market entry + stop-loss) on supertrend
 signals, trails the stop, and squares off all positions at 3:15 PM.
 
+### Paper trading (`--dry-run`)
+
+`--dry-run` routes orders through an in-memory **paper broker** (`src/paper_broker.py`)
+instead of the real one. It wraps the live client — so OHLC and quotes are still real
+— but **simulates fills**, so the strategy runs its *exact live order path*:
+
+- entries fill at the signal-bar close (with optional slippage), then the protective
+  **stop trails every cycle** via `modify_sl_order` — the path a log-only dry-run never
+  exercised;
+- a resting stop **triggers and closes** the position when price crosses it;
+- the 3:15 PM square-off closes open positions;
+- realized/unrealized **P&L** is tracked and printed in the EOD report.
+
+Simulated `[SIM] ...` lines (`fill`, `SL set`, `SL trail`, `SL hit`, `square-off`) make
+the order lifecycle visible in the log. Trigger granularity is one 5-minute cycle, and
+brokerage/taxes are not modeled, so dry-run P&L is an approximation — but it now
+validates the trailing-stop engine, exits, and tick-rounding, not just the entry signal.
+
 You can also run the order-placement check on its own at any time:
 
 ```bash
@@ -188,9 +207,10 @@ otherwise leave it open until the 3:15 PM square-off.
 pytest tests/ -v --cov=src
 ```
 
-105 tests covering indicators, orders (placement, stop-loss tick rounding, status
-confirmation), signal logic, data utilities, tick size, square-off timing, and
-candlestick patterns.
+118 tests covering indicators, orders (placement, stop-loss tick rounding, status
+confirmation), signal logic, data utilities, tick size, square-off timing,
+candlestick patterns, and the dry-run paper broker (simulated fills, trailing-stop
+modify, stop triggers, square-off, and P&L).
 
 ## Requirements
 
