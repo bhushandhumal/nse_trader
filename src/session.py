@@ -2,11 +2,20 @@ import os
 import json
 import time
 import base64
+import socket
 import logging
 import pyotp
+import urllib3.util.connection as _urllib3_cn
 from dotenv import load_dotenv
 from dhanhq import dhanhq, DhanContext
 from dhanhq.auth import DhanLogin
+
+# Force all HTTP traffic (requests -> urllib3 -> dhanhq) to IPv4. Dhan's order
+# gateway whitelists a public *IPv4*; if this box egresses over IPv6 it sees a
+# (rotating, temporary) IPv6 source address and rejects every order with
+# DH-905 'Invalid IP' — even though data/auth calls still succeed. Pinning to
+# IPv4 makes Dhan see the whitelisted address. Must run before any connection.
+_urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
 
 ENV_FILE   = os.path.join(os.path.dirname(__file__), '..', '.env')
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), '..', '.token_cache')
